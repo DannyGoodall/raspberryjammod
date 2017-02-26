@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.InputMismatchException;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -22,6 +23,7 @@ import java.util.Scanner;
 
 import javax.swing.text.html.HTMLDocument.HTMLReader.IsindexAction;
 
+import mobi.omegacentauri.raspberryjammod.APIHandler.ChatDescription;
 import net.minecraft.block.Block;
 import net.minecraft.block.state.IBlockState;
 import net.minecraft.client.Minecraft;
@@ -31,6 +33,8 @@ import net.minecraft.entity.EntityLiving;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.init.Blocks;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.ItemSword;
 import net.minecraft.nbt.JsonToNBT;
 import net.minecraft.nbt.NBTException;
 import net.minecraft.nbt.NBTTagCompound;
@@ -38,6 +42,7 @@ import net.minecraft.network.play.server.S43PacketCamera;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.ChatComponentText;
+import net.minecraft.util.EnumFacing;
 import net.minecraft.util.EnumParticleTypes;
 import net.minecraft.util.IChatComponent;
 import net.minecraft.util.Vec3;
@@ -46,6 +51,7 @@ import net.minecraft.world.World;
 import net.minecraft.world.WorldServer;
 import net.minecraft.world.WorldSettings;
 import net.minecraft.world.chunk.Chunk;
+import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 
 public class APIHandler {
 	// world.checkpoint.save/restore, player.setting, world.setting(nametags_visible,*),
@@ -95,7 +101,7 @@ public class APIHandler {
 	protected static final String SETPOS = "setPos";
 	protected static final String SETROTATION = "setRotation";
 	protected static final String SETTILE = "setTile";
-	protected static final String SETFLYING = "setFlying";
+	protected static final String GETNAME = "getNameAndUUID";
 
 	protected static final float TOO_SMALL = (float) 1e-9;
 
@@ -108,13 +114,46 @@ public class APIHandler {
 	protected boolean havePlayer;
 	protected int playerId;
 	protected EntityPlayerMP playerMP;
+	private List<HitDescription> hits = new LinkedList<HitDescription>();
+	protected List<ChatDescription> chats = new LinkedList<ChatDescription>();
+	protected static final int MAX_CHATS = 512;
+	private static final int MAX_HITS = 512;
+	private volatile boolean restrictToSword = true;
+	private volatile boolean detectLeftClick = RaspberryJamMod.leftClickToo;
 
 	public APIHandler(MCEventHandler eventHandler, PrintWriter writer) throws IOException {
 		this.eventHandler = eventHandler;
 		this.writer = writer;
 		this.havePlayer = false;
 		this.playerMP = null;
+		detectLeftClick = RaspberryJamMod.leftClickToo;
+		eventHandler.registerAPIHandler(this);
 	}
+	
+    synchronized public void died(int entityId) {
+        if (entityId == playerId) {
+            playerMP = null;
+        }
+    }
+    
+    synchronized public void joined(int entityId) {
+        if (entityId == playerId) {
+            playerMP = null;
+        }
+    }
+    
+    synchronized private void updatePlayerMP() {
+        if (playerMP != null)
+            return;
+        
+        for (World w : serverWorlds) {
+            Entity e = w.getEntityByID(playerId);
+            if (e != null) {
+                playerMP = (EntityPlayerMP)e;
+                return;
+            }
+        }
+    }
 	
 	protected boolean setup() {
 		serverWorlds = MinecraftServer.getServer().worldServers;
@@ -176,8 +215,19 @@ public class APIHandler {
 			int paren = clientSentence.indexOf('(');
 			if (paren < 0)
 				return;
+			
 			String cmd = clientSentence.substring(0, paren);
 			String args = clientSentence.substring(paren + 1).replaceAll("[\\s\r\n]+$", "").replaceAll("\\)$", "");
+		
+			if (cmd.startsWith("player.")) {
+				// Compatibility with the mcpi library included with Juice
+				if (args.startsWith("None,")) {
+					args = args.substring(5);
+				}
+				else if (args.equals("None")) {
+					args = "";
+				}
+			}
 
 			scan = new Scanner(args);
 			scan.useDelimiter(",");
@@ -370,7 +420,7 @@ public class APIHandler {
 					for (EntityPlayer p : (List<EntityPlayer>)w.playerEntities) {
 						if (p.getName().equals(name)) {
 							sendLine(p.getEntityId());
-							break;
+							return;
 						}
 					}
 				}
@@ -391,13 +441,13 @@ public class APIHandler {
 			spawnParticle(scan);
 		}
 		else if (cmd.equals(EVENTSCLEAR)) {
-			eventHandler.clearAll();
+			clearAllEvents();
 		}
 		else if (cmd.equals(EVENTSBLOCKHITS)) {
-			sendLine(eventHandler.getHitsAndClear());
+			sendLine(getHitsAndClear());
 		}
 		else if (cmd.equals(EVENTSCHATPOSTS)) {
-			sendLine(eventHandler.getChatsAndClear());
+			sendLine(getChatsAndClear());
 		}
 		else if (cmd.equals(WORLDSETTING)) {
 			String setting = scan.next();
@@ -411,14 +461,17 @@ public class APIHandler {
 		}
 		else if (cmd.equals(EVENTSSETTING)) {
 			String setting = scan.next();
-			if (setting.equals("restrict_to_sword")) // across connections
-				eventHandler.setRestrictToSword(scan.nextInt() != 0);
-			else if (setting.equals("detect_left_click")) // across connections
-				eventHandler.setDetectLeftClick(scan.nextInt() != 0);
+			if (setting.equals("restrict_to_sword")) // connection-specific
+				restrictToSword = (scan.nextInt() != 0);
+			else if (setting.equals("detect_left_click")) // connection-specific
+				detectLeftClick = (scan.nextInt() != 0);
 		}
 		else if (cmd.startsWith("camera.")) {
 			cameraCommand(cmd.substring(7), scan);
 		}
+        else {
+            unknownCommand();
+        }
 	}
 	
 	protected void removeEntity(int id) {
@@ -505,6 +558,11 @@ public class APIHandler {
 	}
 	
 	protected void cameraCommand(String cmd, Scanner scan) {
+        updatePlayerMP();
+        if (playerMP == null) {
+            fail("No player found");
+            return;
+        }
 		if (cmd.equals(GETENTITYID)) {
 			sendLine(playerMP.getSpectatingEntity().getEntityId());
 		}
@@ -562,7 +620,14 @@ public class APIHandler {
 				System.out.println(""+e);
 			}
 		}
+        else {
+            unknownCommand();
+        }
 	}
+    
+    protected void unknownCommand() {
+        fail("unknown command");
+    }
 
 	protected void entityCommand(int id, String cmd, Scanner scan) {
 		if (cmd.equals(GETPOS)) {
@@ -598,6 +663,12 @@ public class APIHandler {
 		else if (cmd.equals(SETDIMENSION)) {			
 			entitySetDimension(id, scan.nextInt());
 		}
+		else if (cmd.equals(GETNAME)) {			
+			entityGetNameAndUUID(id);
+		}
+        else {
+            unknownCommand();
+        }
 	}
 
 	protected void entitySetDirection(int id, Scanner scan) {
@@ -631,6 +702,12 @@ public class APIHandler {
 		Entity e = getServerEntityByID(id);
 		if (e != null) 
 			eventHandler.queueServerAction(new SetDimension(e, dimension));
+	}
+
+	protected void entityGetNameAndUUID(int id) {
+		Entity e = getServerEntityByID(id);
+        if (e != null)
+            sendLine(e.getName()+","+e.getUniqueID());
 	}
 
 	protected void entitySetDirection(Entity e, double x, double y, double z) {
@@ -847,8 +924,16 @@ public class APIHandler {
 	}
 
 	protected Entity getServerEntityByID(int id) {
-		if (id == playerId)
-			return playerMP;
+		if (id == playerId) {
+            updatePlayerMP();
+            if (playerMP != null)
+                return playerMP;
+            else {
+                fail("Cannot find player");
+                return null;
+            }
+                
+        }
 		for (World w : serverWorlds) {
 			Entity e = w.getEntityByID(id);
 			if (e != null)
@@ -865,4 +950,143 @@ public class APIHandler {
 			}
 		}
 	}
+
+	public void close() {
+		eventHandler.unregisterAPIHandler(this);
+	}
+	static class ChatDescription {
+		int id;
+		String message;
+		public ChatDescription(int entityId, String message) {
+			this.id = entityId;
+			this.message = message;
+		}
+	}
+	
+
+	static class HitDescription {
+		private String description;
+		
+		public HitDescription(World[] worlds, PlayerInteractEvent event) {
+			Vec3i pos = Location.encodeVec3i(worlds, 
+					event.entityPlayer.getEntityWorld(),
+					event.pos.getX(), event.pos.getY(), event.pos.getZ());
+			description = ""+pos.getX()+","+pos.getY()+","+pos.getZ()+","+numericFace(event.face)+","+event.entity.getEntityId();
+		}
+
+		private int numericFace(EnumFacing face) {
+			switch(face) {
+			case DOWN:
+				return 0;
+			case UP:
+				return 1;
+			case NORTH:
+				return 2;
+			case SOUTH:
+				return 3;
+			case WEST:
+				return 4;
+			case EAST:
+				return 5;
+			default:
+				return 7;
+			}
+		}
+
+		public String getDescription() {
+			return description;
+		}
+	}
+
+
+	public void onClick(PlayerInteractEvent event) {
+		if (event.action == PlayerInteractEvent.Action.RIGHT_CLICK_BLOCK ||
+				(detectLeftClick && event.action == PlayerInteractEvent.Action.LEFT_CLICK_BLOCK)) {
+			if (! restrictToSword || holdingSword(event.entityPlayer)) {
+				synchronized(hits) {
+					if (hits.size() >= MAX_HITS)
+						hits.remove(0);
+					hits.add(new HitDescription(eventHandler.getWorlds(),event));
+				}
+			}
+		}
+		if (eventHandler.stopChanges) {
+			event.setCanceled(true);
+		}
+	}
+
+
+	private boolean holdingSword(EntityPlayer player) {
+		ItemStack item = player.getHeldItem();
+		if (item != null) {
+			return item.getItem() instanceof ItemSword;
+		}
+		return false;
+	}
+	
+	public String getHitsAndClear() {
+		String out = "";
+
+		synchronized(hits) {
+			int count = hits.size();
+			for (HitDescription e : hits) {
+				if (out.length() > 0)
+					out += "|";
+				out += e.getDescription();
+			}
+			hits.clear();
+		}
+
+		return out;
+	}
+
+	public String getChatsAndClear() {
+		StringBuilder out = new StringBuilder();
+
+		synchronized(chats) {
+			int count = hits.size();
+			for (ChatDescription c : chats) {
+				if (out.length() > 0)
+					out.append("|");
+				out.append(c.id);
+				out.append(",");
+				out.append(c.message.replace("&","&amp;").replace("|", "&#124;"));
+			}
+			chats.clear();
+		}
+
+		return out.toString();
+	}
+
+	public int eventCount() {
+		synchronized(hits) {
+			return hits.size();
+		}
+	}
+
+	public void clearHits() {
+		synchronized(hits) {
+			hits.clear();
+		}
+	}
+
+	public void clearChats() {
+		synchronized(chats) {
+			chats.clear();
+		}
+	}
+	
+	public void clearAllEvents() {
+		hits.clear();
+		chats.clear();
+	}
+
+	public void addChatDescription(ChatDescription cd) {
+		synchronized(chats) {
+			if (chats.size() >= MAX_CHATS)
+				chats.remove(0);
+			chats.add(cd);
+		}
+	}
+	
 }

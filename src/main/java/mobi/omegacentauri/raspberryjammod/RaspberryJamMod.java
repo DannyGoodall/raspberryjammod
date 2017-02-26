@@ -49,11 +49,12 @@ import net.minecraftforge.fml.relauncher.Side;
 import net.minecraftforge.fml.relauncher.SideOnly;
 
 @Mod(modid = RaspberryJamMod.MODID, version = RaspberryJamMod.VERSION, name = RaspberryJamMod.NAME,
-guiFactory = "mobi.omegacentauri.raspberryjammod.GuiFactory", acceptableRemoteVersions="*")
+guiFactory = "mobi.omegacentauri.raspberryjammod.GuiFactory", acceptableRemoteVersions="*", 
+acceptedMinecraftVersions="[1.8,1.9)")
 public class RaspberryJamMod
 {
 	public static final String MODID = "raspberryjammod";
-	public static final String VERSION = "0.51";
+	public static final String VERSION = "0.88";
 	public static final String NAME = "Raspberry Jam Mod";
 	private APIServer fullAPIServer = null;
 	private PythonExternalCommand pythonExternalCommand = null;
@@ -76,6 +77,7 @@ public class RaspberryJamMod
 	private MCEventHandler serverEventHandler = null;
 	private MinecraftServer s;
 	public static int currentPortNumber;
+	public static String serverAddress = null;
 
 	@Mod.EventHandler
 	public void preInit(FMLPreInitializationEvent event) {
