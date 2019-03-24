@@ -104,7 +104,7 @@ if __name__ == '__main__':
     background = block.OBSIDIAN
 
     if len(sys.argv) <= 1:
-        text = "Hello, world!\nWelcome to Minecraft."
+        text = "Mr Goodall is the best\nMinecraft hacker in\nGaligir !!!"
     else:
         del sys.argv[0]
         text = " ".join(sys.argv)

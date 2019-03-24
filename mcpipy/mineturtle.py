@@ -13,6 +13,8 @@ from operator import itemgetter
 from math import *
 import numbers
 
+from mcpi.vec3 import Vec3
+
 Block = block.Block
 
 class Turtle:
@@ -114,6 +116,7 @@ class Turtle:
                     for z in range(-self.width//2 -1, self.width//2 + 1):
                         if x*x + y*y + z*z <= r2:
                             self.nib.append((x,y,z))
+
 
     def goto(self,x,y,z):
         """Teleport turtle to location (x:int, y:int, z:int)"""
@@ -246,6 +249,7 @@ class Turtle:
     def down(self, angle):
         """Turn downwards (decrease pitch)"""
         self.up(-angle)
+
 
     def go(self, distance):
         """Advance turtle, drawing as needed (distance: float)"""
